@@ -1,4 +1,4 @@
-use std::{env::VarError, fs, io::Write, ops::Deref};
+use std::{fs, io::Write, ops::Deref};
 
 use console::{Style, Term, style};
 use similar::{ChangeTag, TextDiff};
@@ -13,46 +13,77 @@ enum EinstellungError {
     #[error("The configuration file is missing ({0})")]
     ConfigurationMissing(std::io::Error),
 
-    #[error("Could not expand {0} ({1})")]
-    InvalidPath(String, shellexpand::LookupError<VarError>),
-
     #[error("The synced file {0} is missing ({1})")]
     SyncFileMissing(String, std::io::Error),
 
-    #[error("The synced {0} could not be saved ({1})")]
+    #[error("The synced file {0} could not be saved ({1})")]
     FailedToSaveSyncFile(String, std::io::Error),
+
+    #[error("The configuration file {0} could not be saved ({1})")]
+    FailedToSaveConfigurationFile(String, std::io::Error),
 }
 
-const HELP_TEXT: &str = r#"
-Einstellung: A simple tool to synchronize configuration files.
-TODO: Finish the help text, sorry...
-"#;
-
 fn main() -> Result<(), EinstellungError> {
-    if std::env::args().len() >= 2 {
-        println!("{HELP_TEXT}");
-        return Ok(());
+    match std::env::args()
+        .into_iter()
+        .nth(1)
+        .map(|arg| arg.to_lowercase())
+        .as_deref()
+        .map(|arg| arg.trim())
+    {
+        Some("read") => read(),
+        Some("write") => write(),
+        _ => help(),
     }
+}
 
-    let mut term = Term::stdout();
-    term.show_cursor()?;
+fn help() -> Result<(), EinstellungError> {
+    const HELP_TEXT: &str = include_str!("../readme.md");
+    println!("{HELP_TEXT}");
+    return Ok(());
+}
 
+fn read_configuration() -> Result<Vec<(String, Vec<String>)>, EinstellungError> {
     let configuration =
         fs::read_to_string(CONFIG_PATH).map_err(EinstellungError::ConfigurationMissing)?;
 
-    for line in configuration.lines() {
-        let mut parts = line.split_whitespace();
-        let Some(original_file) = parts.next() else {
-            continue;
-        };
+    let syncs = configuration
+        .lines()
+        .flat_map(|line| {
+            let mut parts = line.split_whitespace();
+            let Some(original_file) = parts.next() else {
+                return None;
+            };
+            if original_file.starts_with('#') {
+                return None;
+            }
 
-        writeln!(term, "Sync for {original_file}")?;
+            Some((
+                original_file.to_owned(),
+                parts.map(|part| part.to_owned()).collect(),
+            ))
+        })
+        .collect();
 
-        let original_content = fs::read_to_string(original_file)
+    Ok(syncs)
+}
+
+fn read() -> Result<(), EinstellungError> {
+    let mut term = Term::stdout();
+    term.show_cursor()?;
+
+    let configuration = read_configuration()?;
+
+    for (original_file, other_files) in configuration {
+        writeln!(term, "Read for {original_file}")?;
+
+        let original_content = fs::read_to_string(&original_file)
             .map_err(|err| EinstellungError::SyncFileMissing(original_file.to_owned(), err))?;
-        for other_file in parts {
-            let other_file = shellexpand::full(other_file)
-                .map_err(|err| EinstellungError::InvalidPath(other_file.to_string(), err))?;
+        for other_file in other_files {
+            let Ok(other_file) = shellexpand::full(&other_file) else {
+                writeln!(term, "  Invalid file name {}", other_file)?;
+                continue;
+            };
 
             let Ok(other_content) = fs::read_to_string(other_file.deref()) else {
                 writeln!(term, "  Not found {}", other_file)?;
@@ -61,7 +92,7 @@ fn main() -> Result<(), EinstellungError> {
             writeln!(term, "  Compare with {}", other_file)?;
             let content = compare_files(&mut term, &original_content, &other_content)?;
             if let Some(content) = content {
-                fs::write(original_file, content).map_err(|err| {
+                fs::write(&original_file, content).map_err(|err| {
                     EinstellungError::FailedToSaveSyncFile(original_file.to_owned(), err)
                 })?;
             }
@@ -86,7 +117,7 @@ fn compare_files(
         return Ok(None);
     }
 
-    let hint = style("\n> A: keep | S: remove | D: keep block | F: remove block").bold();
+    let hint = style("> A: keep | S: remove | D: keep block | F: remove block").bold();
     writeln!(term, "{hint}")?;
 
     // print changes and move the cursor to the top
@@ -145,7 +176,7 @@ fn compare_files(
 
         term.move_cursor_down(1)?;
     }
-    Ok((changed && read_save_input(term)?).then_some(resulting_content))
+    Ok((changed && read_save_question(term)?).then_some(resulting_content))
 }
 
 fn tag_style(change: ChangeTag) -> Style {
@@ -177,8 +208,8 @@ fn read_accept_input(term: &mut Term) -> Result<(bool, Option<bool>), Einstellun
     }
 }
 
-fn read_save_input(term: &mut Term) -> Result<bool, EinstellungError> {
-    let hint = style("\n> S: save | D: discard").bold();
+fn read_save_question(term: &mut Term) -> Result<bool, EinstellungError> {
+    let hint = style("> S: save | D: discard").bold();
     writeln!(term, "{hint}")?;
     loop {
         let res = match term.read_char()?.to_ascii_lowercase() {
@@ -188,4 +219,43 @@ fn read_save_input(term: &mut Term) -> Result<bool, EinstellungError> {
         };
         return Ok(res);
     }
+}
+
+fn write() -> Result<(), EinstellungError> {
+    let mut term = Term::stdout();
+    term.show_cursor()?;
+
+    let configuration = read_configuration()?;
+
+    for (original_file, other_files) in configuration {
+        writeln!(term, "Write for {original_file}")?;
+
+        let original_content = fs::read_to_string(&original_file)
+            .map_err(|err| EinstellungError::SyncFileMissing(original_file.to_owned(), err))?;
+        for other_file in other_files {
+            let Ok(other_file) = shellexpand::full(&other_file) else {
+                writeln!(term, "  Invalid file name {}", other_file)?;
+                continue;
+            };
+
+            let Ok(other_content) = fs::read_to_string(other_file.deref()) else {
+                writeln!(term, "  Not found {}", other_file)?;
+                continue;
+            };
+            writeln!(term, "  Compare to {}", other_file)?;
+            if original_content == other_content {
+                continue;
+            }
+
+            if read_save_question(&mut term)? {
+                fs::write(other_file.deref(), &original_content).map_err(|err| {
+                    EinstellungError::FailedToSaveConfigurationFile(original_file.to_owned(), err)
+                })?;
+            }
+        }
+    }
+
+    write!(term, "\r")?;
+
+    Ok(())
 }
