@@ -7,7 +7,7 @@
 ## Setup 
 
 1. Install: Setup Rust and run `cargo install --git=https://github.com/antonWetzel/einstellung`
-2. Configuration: Create the file `.einstellung` in the directory you want to synchronize
+2. Configuration: Create the file `.einstellung` or `einstellung` in the directory you want to synchronize
 3. Usage: Run `einstellung read` and `einstellung write`
 
 ## Configuration

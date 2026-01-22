@@ -3,15 +3,15 @@ use std::{fs, io::Write, ops::Deref};
 use console::{Style, Term, style};
 use similar::{ChangeTag, TextDiff};
 
-const CONFIG_PATH: &str = ".einstellung";
+const CONFIG_PATHS: &[&str] = &[".einstellung", "einstellung"];
 
 #[derive(Debug, thiserror::Error)]
 enum EinstellungError {
     #[error(transparent)]
     IoError(#[from] std::io::Error),
 
-    #[error("The configuration file is missing ({0})")]
-    ConfigurationMissing(std::io::Error),
+    #[error("The configuration file is missing")]
+    ConfigurationMissing,
 
     #[error("The synced file {0} is missing ({1})")]
     SyncFileMissing(String, std::io::Error),
@@ -44,8 +44,10 @@ fn help() -> Result<(), EinstellungError> {
 }
 
 fn read_configuration() -> Result<Vec<(String, Vec<String>)>, EinstellungError> {
-    let configuration =
-        fs::read_to_string(CONFIG_PATH).map_err(EinstellungError::ConfigurationMissing)?;
+    let configuration = CONFIG_PATHS
+        .iter()
+        .find_map(|name| fs::read_to_string(name).ok())
+        .ok_or(EinstellungError::ConfigurationMissing)?;
 
     let syncs = configuration
         .lines()
